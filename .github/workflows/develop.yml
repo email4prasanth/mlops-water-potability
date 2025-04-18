@@ -1,0 +1,63 @@
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: 
+      - main
+
+jobs:
+  # JOB to run change detection
+  changes:
+    runs-on: ubuntu-latest
+    # Set job outputs to values from filter step
+    outputs:
+      water-potability: ${{ steps.filter.outputs.water-potability }}
+    # For pull requests it's not necessary to checkout the code
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            water-potability:
+              - 'water-potability/**'
+
+  # JOB to build backend water-potability code
+  water-potability:
+    needs: changes
+    if: ${{ needs.changes.outputs.water-potability == 'true' }}
+    name: Build and Deploy Water Potability
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r ./water-potability/requirements.txt
+          pip install pytest
+      - name: Run tests (optional - add tests later)
+        run: |
+          pytest tests/
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Deploy to AWS EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.AWS_EC2_IP }}
+          username: ${{ secrets.AWS_EC2_USER }}
+          key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          script: |
+            cd /home/ubuntu/mlops-app
+            git pull origin main
+            sudo systemctl restart mlops-app.service
