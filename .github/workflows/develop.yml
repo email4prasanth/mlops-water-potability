@@ -99,6 +99,15 @@ jobs:
           username: ${{ env.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
           script: |
+            # Install AWS CLI if not present
+            if ! command -v aws &> /dev/null; then
+              echo "Installing AWS CLI..."
+              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              unzip awscliv2.zip
+              sudo ./aws/install
+              rm -rf awscliv2.zip aws
+            fi
+            
             # Clean up existing directory if it exists
             if [ -d "/home/ubuntu/mlops-water-potability" ]; then
               echo "Removing existing directory..."
@@ -109,6 +118,11 @@ jobs:
             git clone https://github.com/email4prasanth/mlops-water-potability.git /home/ubuntu/mlops-water-potability
             cd /home/ubuntu/mlops-water-potability
             git checkout dev
+
+            # Configure AWS credentials
+            aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+            aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            aws configure set region ${{ env.AWS_REGION }}
 
             # Get the latest image tag
             IMAGE_TAG=$(git rev-parse --short HEAD)
@@ -136,4 +150,7 @@ jobs:
               -e AWS_REGION=${{ env.AWS_REGION }} \
               $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
             
+            # Verify the container is running
+            echo "Current running containers:"
+            docker ps
             echo "Deployment completed successfully!"
