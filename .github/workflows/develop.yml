@@ -3,16 +3,20 @@ name: MLOps CI/CD Pipeline
 on:
   push:
     branches: 
-      - main
+      - dev
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: mlops-water-potability
+  DOCKER_IMAGE: water-potability-app
+  AWS_EC2_USER: ubuntu
+  AWS_EC2_IP: 34.205.252.37
 
 jobs:
-  # JOB to run change detection
   changes:
     runs-on: ubuntu-latest
-    # Set job outputs to values from filter step
     outputs:
       water-potability: ${{ steps.filter.outputs.water-potability }}
-    # For pull requests it's not necessary to checkout the code
     steps:
       - uses: actions/checkout@v3
       - uses: dorny/paths-filter@v2
@@ -23,7 +27,6 @@ jobs:
             water-potability:
               - 'water-potability/**'
 
-  # JOB to build backend water-potability code
   water-potability:
     needs: changes
     if: ${{ needs.changes.outputs.water-potability == 'true' }}
@@ -32,32 +35,101 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.12"
+      
       - name: Install dependencies
         run: |
           pip install -r ./water-potability/requirements.txt
-          pip install pytest
-      - name: Run tests (optional - add tests later)
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+      
+      - name: Set Up Tag
+        run: echo "IMAGE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+      
+      - name: Build Docker image
         run: |
-          pytest tests/
+          docker build \
+            --build-arg PYTHON_VERSION=3.12 \
+            --build-arg APP_DIR=./water-potability \
+            -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
+            -t ${{ env.ECR_REPOSITORY }}:latest \
+            -f ./water-potability/Dockerfile .
+      
+      - name: Tag and push Docker image
+        run: |
+          docker tag ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker tag ${{ env.ECR_REPOSITORY }}:latest ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
 
   deploy:
-    needs: test
+    needs: water-potability
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
       - name: Deploy to AWS EC2
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.AWS_EC2_IP }}
-          username: ${{ secrets.AWS_EC2_USER }}
+          host: ${{ env.AWS_EC2_IP }}
+          username: ${{ env.AWS_EC2_USER }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
           script: |
-            cd /home/ubuntu/mlops-app
-            git pull origin main
-            sudo systemctl restart mlops-app.service
+            # Clean up existing directory if it exists
+            if [ -d "/home/ubuntu/mlops-water-potability" ]; then
+              echo "Removing existing directory..."
+              rm -rf /home/ubuntu/mlops-water-potability
+            fi
+            
+            # Clone the repository
+            git clone https://github.com/email4prasanth/mlops-water-potability.git /home/ubuntu/mlops-water-potability
+            git checkout dev
+
+            # Navigate to the project directory
+            cd /home/ubuntu/mlops-water-potability
+            
+            # Get the latest image tag
+            IMAGE_TAG=$(git rev-parse --short HEAD)
+            ECR_REGISTRY=$(aws sts get-caller-identity --query 'Account' --output text).dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+            
+            # Stop and remove old container if running
+            if docker ps -a | grep ${{ env.DOCKER_IMAGE }}; then
+              docker stop ${{ env.DOCKER_IMAGE }}
+              docker rm ${{ env.DOCKER_IMAGE }}
+            fi
+            
+            # Login to ECR
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REGISTRY
+            
+            # Pull the latest image
+            docker pull $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+            
+            # Run the new container with environment variables if needed
+            docker run -d \
+              --name ${{ env.DOCKER_IMAGE }} \
+              -p 8000:8000 \
+              --restart unless-stopped \
+              -e AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+              -e AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+              -e AWS_REGION=${{ env.AWS_REGION }} \
+              $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+            
+            echo "Deployment completed successfully!"
