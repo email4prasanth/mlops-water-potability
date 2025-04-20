@@ -1,10 +1,10 @@
 touch setup.sh
-sudo +x setup.sh
+sudo chmod +x setup.sh
 sudo vi setup.sh
 
 # Add Docker's official GPG key:
 sudo apt-get update
-sudo apt-get install ca-certificates curl net-tools
+sudo apt-get install ca-certificates curl net-tools -y
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
@@ -19,7 +19,6 @@ sudo docker run hello-world
 sudo docker images
 sudo usermod -aG docker ubuntu
 docker network create shared_network
-sudo su -
 
 ## Pyhton and pip installation
 sudo apt install python3-pip -y
@@ -27,6 +26,10 @@ sudo apt install python3-pip -y
 # create service and store docker compose file
 sudo mkdir -p /app/service
 sudo chmod -R 755 /app/service/
+
+sudo su -
+
+
 
 
 # Test on Server
@@ -44,6 +47,8 @@ docker --version
 docker compose version
 sudo systemctl enable docker
 sudo systemctl status docker
+
+
 cd /app/service/
 vi docker-compose.yml
 
