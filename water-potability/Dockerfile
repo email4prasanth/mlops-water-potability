@@ -35,20 +35,21 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc python3-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Install dependencies to a temporary directory
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install dependencies
 COPY requirements.txt .
-RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Runtime
 FROM python:3.9-slim
 WORKDIR /app
 
-# Copy installed packages
-COPY --from=builder /install /usr/local
-
-# Ensure Python can find the installed packages
-ENV PYTHONPATH=/usr/local/lib/python3.9/site-packages:$PYTHONPATH \
-    PATH=/usr/local/bin:$PATH
+# Copy virtual environment
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy app code
 COPY . .
