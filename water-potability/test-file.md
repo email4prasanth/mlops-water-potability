@@ -3,3 +3,4 @@
 - added creds
 - added water-potability working dir to overcome missing requirement.txt
 - check the path requirement.txt
+- created ECR
