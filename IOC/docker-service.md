@@ -25,5 +25,9 @@ sudo vi docker-compose.yml (update the context: path)
 
 
 docker compose up --build
-docker compose up -d
+docker-compose up -d
+# docker compose up --build -d
+docker compose down -v
+docker system prune -f
+docker compose up --build -d
 ```
