@@ -33,8 +33,10 @@ jobs:
     name: Build and Deploy Water Potability
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          path: 'water-potability'
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -61,12 +63,14 @@ jobs:
       
       - name: Build Docker image
         run: |
+          cd water-potability
+          ls -al
           docker build \
             --build-arg PYTHON_VERSION=3.12 \
-            --build-arg APP_DIR=./water-potability \
+            --build-arg APP_DIR=. \
             -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
             -t ${{ env.ECR_REPOSITORY }}:latest \
-            -f ./water-potability/Dockerfile .
+            -f ./Dockerfile .
       
       - name: Tag and push Docker image
         run: |
@@ -79,12 +83,8 @@ jobs:
     needs: water-potability
     runs-on: ubuntu-latest
     steps:
-      - name: Debug AWS credentials
-        run: |
-          echo "AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}"
-          echo "AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY != '' }}"
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -108,7 +108,7 @@ jobs:
             git checkout dev
 
             # Navigate to the project directory
-            cd /home/ubuntu/mlops-water-potability
+            cd /home/ubuntu/mlops-water-potability/water-potability
             
             # Get the latest image tag
             IMAGE_TAG=$(git rev-parse --short HEAD)
