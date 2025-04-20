@@ -46,6 +46,10 @@ WORKDIR /app
 # Copy installed packages
 COPY --from=builder /install /usr/local
 
+# Ensure Python can find the installed packages
+ENV PYTHONPATH=/usr/local/lib/python3.9/site-packages:$PYTHONPATH \
+    PATH=/usr/local/bin:$PATH
+
 # Copy app code
 COPY . .
 

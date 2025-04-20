@@ -22,7 +22,8 @@ sudo vi docker-compose.yml (update the context: path)
         networks:
           shared_network:
             external: true
-    
+
 
 docker compose up --build
+docker compose up -d
 ```
