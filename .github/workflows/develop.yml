@@ -35,8 +35,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          path: 'water-potability'
+      
+      - name: Verify files
+        run: |
+          ls -la
+          ls -la water-potability/
       
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -45,7 +48,8 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install -r ./water-potability/requirements.txt
+          cd water-potability
+          pip install -r requirements.txt
       
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -64,13 +68,11 @@ jobs:
       - name: Build Docker image
         run: |
           cd water-potability
-          ls -al
           docker build \
             --build-arg PYTHON_VERSION=3.12 \
-            --build-arg APP_DIR=. \
             -t ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }} \
             -t ${{ env.ECR_REPOSITORY }}:latest \
-            -f ./Dockerfile .
+            -f Dockerfile .
       
       - name: Tag and push Docker image
         run: |
@@ -105,11 +107,9 @@ jobs:
             
             # Clone the repository
             git clone https://github.com/email4prasanth/mlops-water-potability.git /home/ubuntu/mlops-water-potability
+            cd /home/ubuntu/mlops-water-potability
             git checkout dev
 
-            # Navigate to the project directory
-            cd /home/ubuntu/mlops-water-potability/water-potability
-            
             # Get the latest image tag
             IMAGE_TAG=$(git rev-parse --short HEAD)
             ECR_REGISTRY=$(aws sts get-caller-identity --query 'Account' --output text).dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
@@ -126,7 +126,7 @@ jobs:
             # Pull the latest image
             docker pull $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
             
-            # Run the new container with environment variables if needed
+            # Run the new container
             docker run -d \
               --name ${{ env.DOCKER_IMAGE }} \
               -p 8000:8000 \
