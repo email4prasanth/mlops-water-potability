@@ -43,8 +43,8 @@ locals {
   sg = lookup(local.security_group_rules, terraform.workspace)
 
   ami = {
-    "dev" = "ami-0f9de6e2d2f067fca" # Ubuntu 22.04 LTS in us-east-1 (64-bit (x86))
-    # "dev" = "ami-084568db4383264d4" # Ubuntu 24.04 LTS in us-east-1 (64-bit (x86))
+    # "dev" = "ami-0f9de6e2d2f067fca" # Ubuntu 22.04 LTS in us-east-1 (64-bit (x86))
+    "dev" = "ami-0ecb62995f68bb549" # Ubuntu 24.04 LTS in us-east-1 (64-bit (x86))
   }
   server = lookup(local.ami, terraform.workspace)
 }
