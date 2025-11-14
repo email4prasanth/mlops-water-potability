@@ -4,9 +4,13 @@ on:
   push:
     branches:
       - dev
+    paths:
+      - 'IOC/**'
+      - 'water-potability/**'
 
 env:
   AWS_REGION: us-east-1
+  ENVIRONMENT: dev
 
 jobs:
   # -----------------------------
@@ -15,6 +19,7 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
+      IOC: ${{ steps.filter.outputs.IOC }}
       water-potability: ${{ steps.filter.outputs.water-potability }}
     steps:
       - uses: actions/checkout@v4
@@ -38,8 +43,7 @@ jobs:
     defaults:
       run:
         working-directory: backend-infra
-    env:
-      ENVIRONMENT: dev
+
     steps:
       - uses: actions/checkout@v4
 
