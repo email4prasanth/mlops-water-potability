@@ -40,7 +40,6 @@ jobs:
         working-directory: backend-infra
     env:
       ENVIRONMENT: dev
-      AWS_REGION: ${{ env.AWS_REGION }}
     steps:
       - uses: actions/checkout@v4
 
