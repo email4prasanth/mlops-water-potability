@@ -11,7 +11,7 @@ terraform {
 provider "aws" {
   region = local.aws_region
   #   shared_credentials_files = ["~/.aws/credentials"]  # Path to AWS credentials
-  profile = "tut" # Profile name
+  # profile = "tut" # Profile name
 }
 # Backend tf files to store in S3 bucket
 terraform {
@@ -19,6 +19,6 @@ terraform {
     bucket  = "mlopstfstore"
     key     = "terraform.tfstate"
     region  = "us-east-1"
-    profile = "tut"
+    # profile = "tut"
   }
 }
