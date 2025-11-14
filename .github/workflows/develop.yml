@@ -38,11 +38,11 @@ jobs:
   # -----------------------------
   terraform-apply:
     needs: changes
-    if: ${{ needs.changes.outputs.water-potability == 'true' || needs.changes.outputs.backend-infra == 'true' }}
+    if: ${{ needs.changes.outputs.water-potability == 'true' || needs.changes.outputs.IOC == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: backend-infra
+        working-directory: IOC
 
     steps:
       - uses: actions/checkout@v4
@@ -111,7 +111,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tf-outputs
-          path: backend-infra/tf_outputs.json
+          path: IOC/tf_outputs.json
 
   # # -----------------------------
   # # 3) Build & Push Docker Image to ECR

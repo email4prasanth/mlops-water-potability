@@ -18,7 +18,7 @@ resource "aws_route_table" "mlops-pub-rt" {
     Name = "${local.project_name.name}-MainRT-${terraform.workspace}"
   }
 }
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route_table_association
+# subnet route table association
 resource "aws_route_table_association" "RTA-pub" {
   subnet_id      = aws_subnet.mlops-pub_subnet1.id
   route_table_id = aws_route_table.mlops-pub-rt.id
