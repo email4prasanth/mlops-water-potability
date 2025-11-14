@@ -145,11 +145,12 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      - name: Terraform Plan (save plan)
-        run: terraform plan -out=tfplan
-
+      - name: Terraform Plan for Destroy
+        run: terraform plan -destroy -out=tfplan_destroy
+      
       - name: Terraform Destroy
-        run: terraform destroy -auto-approve tfplan
+        run: terraform apply -auto-approve tfplan_destroy
+      
 
   # # -----------------------------
   # # 3) Build & Push Docker Image to ECR
