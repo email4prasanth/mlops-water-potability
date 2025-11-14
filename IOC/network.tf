@@ -6,7 +6,7 @@ resource "aws_internet_gateway" "mlops-igw" {
     Name = "${local.project_name.name}-IGW-${terraform.workspace}"
   }
 }
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/route_table.html
+# route table for public subnet
 resource "aws_route_table" "mlops-pub-rt" {
   vpc_id = aws_vpc.mlops-vpc.id
 
