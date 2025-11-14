@@ -248,60 +248,104 @@ jobs:
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
           script: |
             set -euo pipefail
-            echo "Deploying to EC2 host: $HOSTNAME (will use remote IP provided by Terraform)"
 
-            # ensure docker exists (install if not present)
+            echo "Deploying to EC2..."
+            echo "User: $USER"
+            echo "EC2 Host: $HOSTNAME"
+
+            # -------------------------------
+            # Install Docker if missing
+            # -------------------------------
             if ! command -v docker &> /dev/null; then
-              echo "Docker not found -- installing"
+              echo "Docker not found -- installing..."
+
               sudo apt-get update
-              sudo apt-get install -y unzip ca-certificates curl gnupg lsb-release
-              # install Docker official repo
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+              sudo apt-get install -y \
+                ca-certificates \
+                curl \
+                gnupg \
+                lsb-release \
+                unzip
+
+              # Add Docker repository
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+                | sudo gpg --dearmor -o /usr/share/keyrings/docker.gpg
+
               echo \
-                "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
-                $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+                "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+                | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
               sudo apt-get update
               sudo apt-get install -y docker-ce docker-ce-cli containerd.io
               sudo usermod -aG docker $USER || true
             fi
 
-            # install AWS CLI if missing (used to login to ECR)
+            # -------------------------------
+            # Install AWS CLI if missing
+            # -------------------------------
             if ! command -v aws &> /dev/null; then
-              echo "Installing AWS CLI..."
-              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              echo "AWS CLI not found -- installing..."
+
+              sudo apt-get update
+              sudo apt-get install -y unzip curl
+
+              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
+                -o "awscliv2.zip"
+
               unzip awscliv2.zip
               sudo ./aws/install
-              rm -rf awscliv2.zip aws
+              rm -rf aws awscliv2.zip
             fi
 
+            # -------------------------------
+            # Export AWS credentials for EC2 session
+            # -------------------------------
+            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            export AWS_DEFAULT_REGION="${{ env.AWS_REGION }}"
+
+            echo "AWS credentials configured on remote host."
+
+            # -------------------------------
+            # Prepare ECR info from TF outputs
+            # -------------------------------
             ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-            ECR_REGISTRY="$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-            REPO="${ECR_REGISTRY}/$ECR_REPOSITORY"
-            TAG="$IMAGE_TAG"
+            ECR_REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
+            REPO="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}"
+            TAG="${{ env.IMAGE_TAG }}"
 
-            echo "ECR_REGISTRY: $ECR_REGISTRY"
-            echo "REPO: $REPO"
-            echo "TAG: $TAG"
+            echo "ECR: $REPO"
+            echo "Tag: $TAG"
 
-            # login to ECR
-            aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REGISTRY
+            # -------------------------------
+            # Docker login to ECR
+            # -------------------------------
+            aws ecr get-login-password \
+              --region $AWS_DEFAULT_REGION \
+              | docker login --username AWS --password-stdin $ECR_REGISTRY
 
-            # stop previous container if exists
-            if docker ps -a --format '{{.Names}}' | grep -q "$DOCKER_IMAGE_NAME"; then
-              docker stop "$DOCKER_IMAGE_NAME" || true
-              docker rm "$DOCKER_IMAGE_NAME" || true
+            # -------------------------------
+            # Stop and remove old container
+            # -------------------------------
+            if docker ps -a --format '{{.Names}}' | grep -q "${{ env.DOCKER_IMAGE_NAME }}"; then
+              docker stop "${{ env.DOCKER_IMAGE_NAME }}" || true
+              docker rm "${{ env.DOCKER_IMAGE_NAME }}" || true
             fi
 
-            # pull and run
+            # -------------------------------
+            # Pull & run new image
+            # -------------------------------
             docker pull "$REPO:$TAG"
+
             docker run -d \
-              --name "$DOCKER_IMAGE_NAME" \
+              --name "${{ env.DOCKER_IMAGE_NAME }}" \
               -p 8000:8000 \
               --restart unless-stopped \
               "$REPO:$TAG"
 
-            echo "Deployment finished. Containers:"
-            docker ps --filter "name=$DOCKER_IMAGE_NAME" --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+            echo "Deployment complete. Running containers:"
+            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
 
   
   # # -----------------------------
