@@ -9,7 +9,7 @@ data "cloudinit_config" "user_data" {
   }
 }
 
-# https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/instance
+# Create EC2 instance
 resource "aws_instance" "public-web-server-1" {
   ami               = local.server
   availability_zone = local.avail_zone

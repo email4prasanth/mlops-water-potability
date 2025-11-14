@@ -23,10 +23,10 @@ jobs:
         with:
           base: ${{ github.ref }}
           filters: |
+            IOC:
+              - 'IOC/**'
             water-potability:
               - 'water-potability/**'
-            backend-infra:
-              - 'backend-infra/**'
 
   # -----------------------------
   # 2) Terraform: init / apply and export JSON outputs
