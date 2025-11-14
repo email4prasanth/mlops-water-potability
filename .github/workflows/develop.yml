@@ -33,10 +33,89 @@ jobs:
             water-potability:
               - 'water-potability/**'
 
+  # # -----------------------------
+  # # 2) Terraform: init / apply and export JSON outputs
+  # # -----------------------------
+  # terraform-apply:
+  #   needs: changes
+  #   if: ${{ needs.changes.outputs.water-potability == 'true' || needs.changes.outputs.IOC == 'true' }}
+  #   runs-on: ubuntu-latest
+  #   defaults:
+  #     run:
+  #       working-directory: IOC
+
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Configure AWS credentials
+  #       uses: aws-actions/configure-aws-credentials@v2
+  #       with:
+  #         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         aws-region: ${{ env.AWS_REGION }}
+
+  #     - name: Set up Terraform
+  #       uses: hashicorp/setup-terraform@v3
+
+  #     - name: Terraform Init
+  #       run: terraform init -reconfigure
+
+  #     - name: Select/Create Workspace
+  #       run: terraform workspace select $ENVIRONMENT || terraform workspace new $ENVIRONMENT
+
+  #     - name: Terraform Validate
+  #       run: terraform validate
+
+  #     - name: Terraform Plan (save plan)
+  #       run: terraform plan -out=tfplan
+
+  #     - name: Terraform Apply
+  #       run: terraform apply -auto-approve tfplan
+
+  #     - name: Export terraform outputs as JSON
+  #       id: export-tf
+  #       run: |
+  #         # raw terraform output in JSON which includes structure: {key: {value: ...}}
+  #         terraform output -json > tf_outputs_raw.json
+
+  #         # extract the fields we expect into a simplified JSON (fail if missing)
+  #         # Adjust .<name>.value below if your terraform output keys are named differently
+  #         EC2_IP=$(jq -r '.ec2_public_ip.value // empty' tf_outputs_raw.json)
+  #         EC2_USER=$(jq -r '.ec2_user.value // empty' tf_outputs_raw.json)
+  #         ECR_REPO=$(jq -r '.ecr_repository.value // empty' tf_outputs_raw.json)
+  #         DOCKER_NAME=$(jq -r '.docker_image_name.value // empty' tf_outputs_raw.json)
+
+  #         if [ -z "$EC2_IP" ] || [ -z "$EC2_USER" ] || [ -z "$ECR_REPO" ] || [ -z "$DOCKER_NAME" ]; then
+  #           echo "One or more required terraform outputs are missing. Check outputs.tf names (ec2_public_ip, ec2_user, ecr_repository, docker_image_name)"
+  #           echo "Current raw outputs:"
+  #           cat tf_outputs_raw.json
+  #           exit 1
+  #         fi
+
+  #         jq -n \
+  #           --arg ec2_public_ip "$EC2_IP" \
+  #           --arg ec2_user "$EC2_USER" \
+  #           --arg ecr_repository "$ECR_REPO" \
+  #           --arg docker_image_name "$DOCKER_NAME" \
+  #           '{
+  #             ec2_public_ip: $ec2_public_ip,
+  #             ec2_user: $ec2_user,
+  #             ecr_repository: $ecr_repository,
+  #             docker_image_name: $docker_image_name
+  #           }' > tf_outputs.json
+
+  #         echo "Produced tf_outputs.json:"
+  #         cat tf_outputs.json
+
+  #     - name: Upload Terraform outputs artifact (JSON)
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: tf-outputs
+  #         path: IOC/tf_outputs.json
   # -----------------------------
-  # 2) Terraform: init / apply and export JSON outputs
+  # 2) Terraform: destroy
   # -----------------------------
-  terraform-apply:
+  terraform-destroy:
     needs: changes
     if: ${{ needs.changes.outputs.water-potability == 'true' || needs.changes.outputs.IOC == 'true' }}
     runs-on: ubuntu-latest
@@ -69,49 +148,8 @@ jobs:
       - name: Terraform Plan (save plan)
         run: terraform plan -out=tfplan
 
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
-
-      - name: Export terraform outputs as JSON
-        id: export-tf
-        run: |
-          # raw terraform output in JSON which includes structure: {key: {value: ...}}
-          terraform output -json > tf_outputs_raw.json
-
-          # extract the fields we expect into a simplified JSON (fail if missing)
-          # Adjust .<name>.value below if your terraform output keys are named differently
-          EC2_IP=$(jq -r '.ec2_public_ip.value // empty' tf_outputs_raw.json)
-          EC2_USER=$(jq -r '.ec2_user.value // empty' tf_outputs_raw.json)
-          ECR_REPO=$(jq -r '.ecr_repository.value // empty' tf_outputs_raw.json)
-          DOCKER_NAME=$(jq -r '.docker_image_name.value // empty' tf_outputs_raw.json)
-
-          if [ -z "$EC2_IP" ] || [ -z "$EC2_USER" ] || [ -z "$ECR_REPO" ] || [ -z "$DOCKER_NAME" ]; then
-            echo "One or more required terraform outputs are missing. Check outputs.tf names (ec2_public_ip, ec2_user, ecr_repository, docker_image_name)"
-            echo "Current raw outputs:"
-            cat tf_outputs_raw.json
-            exit 1
-          fi
-
-          jq -n \
-            --arg ec2_public_ip "$EC2_IP" \
-            --arg ec2_user "$EC2_USER" \
-            --arg ecr_repository "$ECR_REPO" \
-            --arg docker_image_name "$DOCKER_NAME" \
-            '{
-              ec2_public_ip: $ec2_public_ip,
-              ec2_user: $ec2_user,
-              ecr_repository: $ecr_repository,
-              docker_image_name: $docker_image_name
-            }' > tf_outputs.json
-
-          echo "Produced tf_outputs.json:"
-          cat tf_outputs.json
-
-      - name: Upload Terraform outputs artifact (JSON)
-        uses: actions/upload-artifact@v4
-        with:
-          name: tf-outputs
-          path: IOC/tf_outputs.json
+      - name: Terraform Destroy
+        run: terraform destroy -auto-approve tfplan
 
   # # -----------------------------
   # # 3) Build & Push Docker Image to ECR
