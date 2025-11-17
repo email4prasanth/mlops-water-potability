@@ -33,325 +33,10 @@ jobs:
             water-potability:
               - 'water-potability/**'
 
-  # -----------------------------
-  # 2) Terraform: init / apply and export JSON outputs
-  # -----------------------------
-  terraform-apply:
-    needs: changes
-    if: ${{ needs.changes.outputs.water-potability == 'true' || needs.changes.outputs.IOC == 'true' }}
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: IOC
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform Init
-        run: terraform init -reconfigure
-
-      - name: Select/Create Workspace
-        run: terraform workspace select $ENVIRONMENT || terraform workspace new $ENVIRONMENT
-
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Terraform Refresh
-        run: terraform refresh
-
-      - name: Terraform Plan (save plan)
-        run: terraform plan -out=tfplan
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
-
-      - name: Export terraform outputs as JSON
-        id: export-tf
-        run: |
-          # raw terraform output in JSON which includes structure: {key: {value: ...}}
-          terraform output -json > tf_outputs_raw.json
-
-          # extract the fields we expect into a simplified JSON (fail if missing)
-          # Adjust .<name>.value below if your terraform output keys are named differently
-          EC2_IP=$(jq -r '.ec2_public_ip.value // empty' tf_outputs_raw.json)
-          EC2_USER=$(jq -r '.ec2_user.value // empty' tf_outputs_raw.json)
-          ECR_REPO=$(jq -r '.ecr_repository.value // empty' tf_outputs_raw.json)
-          DOCKER_NAME=$(jq -r '.docker_image_name.value // empty' tf_outputs_raw.json)
-
-          if [ -z "$EC2_IP" ] || [ -z "$EC2_USER" ] || [ -z "$ECR_REPO" ] || [ -z "$DOCKER_NAME" ]; then
-            echo "One or more required terraform outputs are missing. Check outputs.tf names (ec2_public_ip, ec2_user, ecr_repository, docker_image_name)"
-            echo "Current raw outputs:"
-            cat tf_outputs_raw.json
-            exit 1
-          fi
-
-          jq -n \
-            --arg ec2_public_ip "$EC2_IP" \
-            --arg ec2_user "$EC2_USER" \
-            --arg ecr_repository "$ECR_REPO" \
-            --arg docker_image_name "$DOCKER_NAME" \
-            '{
-              ec2_public_ip: $ec2_public_ip,
-              ec2_user: $ec2_user,
-              ecr_repository: $ecr_repository,
-              docker_image_name: $docker_image_name
-            }' > tf_outputs.json
-
-          echo "Produced tf_outputs.json:"
-          cat tf_outputs.json
-
-      - name: Upload Terraform outputs artifact (JSON)
-        uses: actions/upload-artifact@v4
-        with:
-          name: tf-outputs
-          path: IOC/tf_outputs.json
-
-
-  # -----------------------------
-  # 3) Build & Push Docker Image to ECR
-  # -----------------------------
-  build-and-push:
-    needs: terraform-apply
-    if: ${{ needs.changes.outputs.water-potability == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download tf outputs artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tf-outputs
-          path: ./tf-outputs
-
-      - name: Load TF outputs into env
-        id: load-tf
-        run: |
-          if [ ! -f ./tf-outputs/tf_outputs.json ]; then
-            echo "tf_outputs.json not found"
-            ls -la ./tf-outputs
-            exit 1
-          fi
-          TF_JSON=$(cat ./tf-outputs/tf_outputs.json)
-          echo "TF_JSON: $TF_JSON" > /dev/null  # don't print actual sensitive values
-          # extract values and export to GITHUB_ENV
-          echo "ECR_REPOSITORY=$(echo "$TF_JSON" | jq -r .ecr_repository)" >> $GITHUB_ENV
-          echo "DOCKER_IMAGE_NAME=$(echo "$TF_JSON" | jq -r .docker_image_name)" >> $GITHUB_ENV
-          echo "EC2_PUBLIC_IP=$(echo "$TF_JSON" | jq -r .ec2_public_ip)" >> $GITHUB_ENV
-          echo "EC2_USER=$(echo "$TF_JSON" | jq -r .ec2_user)" >> $GITHUB_ENV
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Set IMAGE_TAG environment
-        run: echo "IMAGE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-
-      - name: Build Docker image (uses ECR repository name from Terraform)
-        env:
-          ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
-        run: |
-          cd water-potability
-          # build and tag local images using the simple repo name
-          docker build \
-            --build-arg PYTHON_VERSION=3.12 \
-            -t $ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REPOSITORY:latest \
-            -f Dockerfile .
-
-      - name: Tag with full ECR registry and push
-        env:
-          IMAGE_TAG: ${{ env.IMAGE_TAG }}
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
-          FULL_TAG="$ECR_REGISTRY/$(cat ./tf-outputs/tf_outputs.json | jq -r .ecr_repository):$IMAGE_TAG"
-
-          echo "Full push tag: $FULL_TAG"
-          docker tag ${{ env.ECR_REPOSITORY }}:$IMAGE_TAG $FULL_TAG
-          docker push $FULL_TAG
-
-          # Also push :latest
-          docker tag ${{ env.ECR_REPOSITORY }}:latest $ECR_REGISTRY/$(cat ./tf-outputs/tf_outputs.json | jq -r .ecr_repository):latest
-          docker push $ECR_REGISTRY/$(cat ./tf-outputs/tf_outputs.json | jq -r .ecr_repository):latest
-
-      - name: Save image metadata artifact
-        run: |
-          jq -n --arg image_tag "${{ env.IMAGE_TAG }}" '{image_tag: $image_tag}' > image_info.json
-          ls -la
-        # upload the image tag so deploy step can use it
-      - name: Upload image info artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-info
-          path: image_info.json
-
-  # -----------------------------
-  # 4) Deploy to EC2 (no git clone on host)
-  # -----------------------------
-  deploy-to-ec2:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download tf outputs artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tf-outputs
-          path: ./tf-outputs
-
-      - name: Download image-info artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: image-info
-          path: ./image-info
-
-      - name: Read artifacts into env
-        run: |
-          TF_JSON=$(cat ./tf-outputs/tf_outputs.json)
-          echo "EC2_PUBLIC_IP=$(echo "$TF_JSON" | jq -r .ec2_public_ip)" >> $GITHUB_ENV
-          echo "EC2_USER=$(echo "$TF_JSON" | jq -r .ec2_user)" >> $GITHUB_ENV
-          echo "ECR_REPOSITORY=$(echo "$TF_JSON" | jq -r .ecr_repository)" >> $GITHUB_ENV
-          echo "DOCKER_IMAGE_NAME=$(echo "$TF_JSON" | jq -r .docker_image_name)" >> $GITHUB_ENV
-
-          IMAGE_TAG=$(cat ./image-info/image_info.json | jq -r .image_tag)
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-
-      - name: Configure AWS credentials (for ECR login on remote host)
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Deploy to EC2 via SSH (pull image from ECR and run)
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ env.EC2_PUBLIC_IP }}
-          username: ${{ env.EC2_USER }}
-          key: ${{ secrets.AWS_EC2_SSH_KEY }}
-          script: |
-            set -euo pipefail
-
-            echo "Deploying to EC2..."
-            echo "User: $USER"
-            echo "EC2 Host: $HOSTNAME"
-
-            # -------------------------------
-            # Install Docker if missing
-            # -------------------------------
-            if ! command -v docker &> /dev/null; then
-              echo "Docker not found -- installing..."
-
-              sudo apt-get update
-              sudo apt-get install -y \
-                ca-certificates \
-                curl \
-                gnupg \
-                lsb-release \
-                unzip
-
-              # Add Docker repository
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-                | sudo gpg --dearmor -o /usr/share/keyrings/docker.gpg
-
-              echo \
-                "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] \
-                https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-                | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-              sudo apt-get update
-              sudo apt-get install -y docker-ce docker-ce-cli containerd.io
-              sudo usermod -aG docker $USER || true
-            fi
-
-            # -------------------------------
-            # Install AWS CLI if missing
-            # -------------------------------
-            if ! command -v aws &> /dev/null; then
-              echo "AWS CLI not found -- installing..."
-
-              sudo apt-get update
-              sudo apt-get install -y unzip curl
-
-              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
-                -o "awscliv2.zip"
-
-              unzip awscliv2.zip
-              sudo ./aws/install
-              rm -rf aws awscliv2.zip
-            fi
-
-            # -------------------------------
-            # Export AWS credentials for EC2 session
-            # -------------------------------
-            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
-            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-            export AWS_DEFAULT_REGION="${{ env.AWS_REGION }}"
-
-            echo "AWS credentials configured on remote host."
-
-            # -------------------------------
-            # Prepare ECR info from TF outputs
-            # -------------------------------
-            ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
-            ECR_REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
-            REPO="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}"
-            TAG="${{ env.IMAGE_TAG }}"
-
-            echo "ECR: $REPO"
-            echo "Tag: $TAG"
-
-            # -------------------------------
-            # Docker login to ECR
-            # -------------------------------
-            aws ecr get-login-password \
-              --region $AWS_DEFAULT_REGION \
-              | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
-
-            # -------------------------------
-            # Stop and remove old container
-            # -------------------------------
-            if sudo docker ps -a --format '{{.Names}}' | grep -q "${{ env.DOCKER_IMAGE_NAME }}"; then
-              sudo docker stop "${{ env.DOCKER_IMAGE_NAME }}" || true
-              sudo docker rm "${{ env.DOCKER_IMAGE_NAME }}" || true
-            fi
-
-            # -------------------------------
-            # Pull & run new image
-            # -------------------------------
-            sudo docker pull "$REPO:$TAG"
-
-            sudo docker run -d \
-              --name "${{ env.DOCKER_IMAGE_NAME }}" \
-              -p 8000:8000 \
-              --restart unless-stopped \
-              "$REPO:$TAG"
-
-            echo "Deployment complete. Running containers:"
-            sudo docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
-
-  
   # # -----------------------------
-  # # 2) Terraform: destroy
+  # # 2) Terraform: init / apply and export JSON outputs
   # # -----------------------------
-  # terraform-destroy:
+  # terraform-apply:
   #   needs: changes
   #   if: ${{ needs.changes.outputs.water-potability == 'true' || needs.changes.outputs.IOC == 'true' }}
   #   runs-on: ubuntu-latest
@@ -378,15 +63,331 @@ jobs:
   #     - name: Select/Create Workspace
   #       run: terraform workspace select $ENVIRONMENT || terraform workspace new $ENVIRONMENT
 
-  #     - name: Terraform Refresh
-  #       run: terraform refresh
-
   #     - name: Terraform Validate
   #       run: terraform validate
 
-  #     - name: Terraform Plan for Destroy
-  #       run: terraform plan -destroy -out=tfplan_destroy
+  #     - name: Terraform Refresh
+  #       run: terraform refresh
 
-  #     - name: Terraform Destroy
-  #       run: terraform apply -auto-approve tfplan_destroy
+  #     - name: Terraform Plan (save plan)
+  #       run: terraform plan -out=tfplan
+
+  #     - name: Terraform Apply
+  #       run: terraform apply -auto-approve tfplan
+
+  #     - name: Export terraform outputs as JSON
+  #       id: export-tf
+  #       run: |
+  #         # raw terraform output in JSON which includes structure: {key: {value: ...}}
+  #         terraform output -json > tf_outputs_raw.json
+
+  #         # extract the fields we expect into a simplified JSON (fail if missing)
+  #         # Adjust .<name>.value below if your terraform output keys are named differently
+  #         EC2_IP=$(jq -r '.ec2_public_ip.value // empty' tf_outputs_raw.json)
+  #         EC2_USER=$(jq -r '.ec2_user.value // empty' tf_outputs_raw.json)
+  #         ECR_REPO=$(jq -r '.ecr_repository.value // empty' tf_outputs_raw.json)
+  #         DOCKER_NAME=$(jq -r '.docker_image_name.value // empty' tf_outputs_raw.json)
+
+  #         if [ -z "$EC2_IP" ] || [ -z "$EC2_USER" ] || [ -z "$ECR_REPO" ] || [ -z "$DOCKER_NAME" ]; then
+  #           echo "One or more required terraform outputs are missing. Check outputs.tf names (ec2_public_ip, ec2_user, ecr_repository, docker_image_name)"
+  #           echo "Current raw outputs:"
+  #           cat tf_outputs_raw.json
+  #           exit 1
+  #         fi
+
+  #         jq -n \
+  #           --arg ec2_public_ip "$EC2_IP" \
+  #           --arg ec2_user "$EC2_USER" \
+  #           --arg ecr_repository "$ECR_REPO" \
+  #           --arg docker_image_name "$DOCKER_NAME" \
+  #           '{
+  #             ec2_public_ip: $ec2_public_ip,
+  #             ec2_user: $ec2_user,
+  #             ecr_repository: $ecr_repository,
+  #             docker_image_name: $docker_image_name
+  #           }' > tf_outputs.json
+
+  #         echo "Produced tf_outputs.json:"
+  #         cat tf_outputs.json
+
+  #     - name: Upload Terraform outputs artifact (JSON)
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: tf-outputs
+  #         path: IOC/tf_outputs.json
+
+
+  # # -----------------------------
+  # # 3) Build & Push Docker Image to ECR
+  # # -----------------------------
+  # build-and-push:
+  #   needs: terraform-apply
+  #   if: ${{ needs.changes.outputs.water-potability == 'true' }}
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Download tf outputs artifact
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: tf-outputs
+  #         path: ./tf-outputs
+
+  #     - name: Load TF outputs into env
+  #       id: load-tf
+  #       run: |
+  #         if [ ! -f ./tf-outputs/tf_outputs.json ]; then
+  #           echo "tf_outputs.json not found"
+  #           ls -la ./tf-outputs
+  #           exit 1
+  #         fi
+  #         TF_JSON=$(cat ./tf-outputs/tf_outputs.json)
+  #         echo "TF_JSON: $TF_JSON" > /dev/null  # don't print actual sensitive values
+  #         # extract values and export to GITHUB_ENV
+  #         echo "ECR_REPOSITORY=$(echo "$TF_JSON" | jq -r .ecr_repository)" >> $GITHUB_ENV
+  #         echo "DOCKER_IMAGE_NAME=$(echo "$TF_JSON" | jq -r .docker_image_name)" >> $GITHUB_ENV
+  #         echo "EC2_PUBLIC_IP=$(echo "$TF_JSON" | jq -r .ec2_public_ip)" >> $GITHUB_ENV
+  #         echo "EC2_USER=$(echo "$TF_JSON" | jq -r .ec2_user)" >> $GITHUB_ENV
+
+  #     - name: Configure AWS credentials
+  #       uses: aws-actions/configure-aws-credentials@v2
+  #       with:
+  #         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         aws-region: ${{ env.AWS_REGION }}
+
+  #     - name: Login to Amazon ECR
+  #       id: login-ecr
+  #       uses: aws-actions/amazon-ecr-login@v1
+
+  #     - name: Set IMAGE_TAG environment
+  #       run: echo "IMAGE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+  #     - name: Build Docker image (uses ECR repository name from Terraform)
+  #       env:
+  #         ECR_REPOSITORY: ${{ env.ECR_REPOSITORY }}
+  #         IMAGE_TAG: ${{ env.IMAGE_TAG }}
+  #       run: |
+  #         cd water-potability
+  #         # build and tag local images using the simple repo name
+  #         docker build \
+  #           --build-arg PYTHON_VERSION=3.12 \
+  #           -t $ECR_REPOSITORY:$IMAGE_TAG \
+  #           -t $ECR_REPOSITORY:latest \
+  #           -f Dockerfile .
+
+  #     - name: Tag with full ECR registry and push
+  #       env:
+  #         IMAGE_TAG: ${{ env.IMAGE_TAG }}
+  #       run: |
+  #         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+  #         ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+  #         FULL_TAG="$ECR_REGISTRY/$(cat ./tf-outputs/tf_outputs.json | jq -r .ecr_repository):$IMAGE_TAG"
+
+  #         echo "Full push tag: $FULL_TAG"
+  #         docker tag ${{ env.ECR_REPOSITORY }}:$IMAGE_TAG $FULL_TAG
+  #         docker push $FULL_TAG
+
+  #         # Also push :latest
+  #         docker tag ${{ env.ECR_REPOSITORY }}:latest $ECR_REGISTRY/$(cat ./tf-outputs/tf_outputs.json | jq -r .ecr_repository):latest
+  #         docker push $ECR_REGISTRY/$(cat ./tf-outputs/tf_outputs.json | jq -r .ecr_repository):latest
+
+  #     - name: Save image metadata artifact
+  #       run: |
+  #         jq -n --arg image_tag "${{ env.IMAGE_TAG }}" '{image_tag: $image_tag}' > image_info.json
+  #         ls -la
+  #       # upload the image tag so deploy step can use it
+  #     - name: Upload image info artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: image-info
+  #         path: image_info.json
+
+  # # -----------------------------
+  # # 4) Deploy to EC2 (no git clone on host)
+  # # -----------------------------
+  # deploy-to-ec2:
+  #   needs: build-and-push
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Download tf outputs artifact
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: tf-outputs
+  #         path: ./tf-outputs
+
+  #     - name: Download image-info artifact
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         name: image-info
+  #         path: ./image-info
+
+  #     - name: Read artifacts into env
+  #       run: |
+  #         TF_JSON=$(cat ./tf-outputs/tf_outputs.json)
+  #         echo "EC2_PUBLIC_IP=$(echo "$TF_JSON" | jq -r .ec2_public_ip)" >> $GITHUB_ENV
+  #         echo "EC2_USER=$(echo "$TF_JSON" | jq -r .ec2_user)" >> $GITHUB_ENV
+  #         echo "ECR_REPOSITORY=$(echo "$TF_JSON" | jq -r .ecr_repository)" >> $GITHUB_ENV
+  #         echo "DOCKER_IMAGE_NAME=$(echo "$TF_JSON" | jq -r .docker_image_name)" >> $GITHUB_ENV
+
+  #         IMAGE_TAG=$(cat ./image-info/image_info.json | jq -r .image_tag)
+  #         echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
+
+  #     - name: Configure AWS credentials (for ECR login on remote host)
+  #       uses: aws-actions/configure-aws-credentials@v2
+  #       with:
+  #         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         aws-region: ${{ env.AWS_REGION }}
+
+  #     - name: Deploy to EC2 via SSH (pull image from ECR and run)
+  #       uses: appleboy/ssh-action@master
+  #       with:
+  #         host: ${{ env.EC2_PUBLIC_IP }}
+  #         username: ${{ env.EC2_USER }}
+  #         key: ${{ secrets.AWS_EC2_SSH_KEY }}
+  #         script: |
+  #           set -euo pipefail
+
+  #           echo "Deploying to EC2..."
+  #           echo "User: $USER"
+  #           echo "EC2 Host: $HOSTNAME"
+
+  #           # -------------------------------
+  #           # Install Docker if missing
+  #           # -------------------------------
+  #           if ! command -v docker &> /dev/null; then
+  #             echo "Docker not found -- installing..."
+
+  #             sudo apt-get update
+  #             sudo apt-get install -y \
+  #               ca-certificates \
+  #               curl \
+  #               gnupg \
+  #               net-tools \
+  #               lsb-release \
+  #               unzip
+
+  #             # Add Docker repository
+  #             curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  #               | sudo gpg --dearmor -o /usr/share/keyrings/docker.gpg
+
+  #             echo \
+  #               "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker.gpg] \
+  #               https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
+  #               | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  #             sudo apt-get update
+  #             sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+  #             sudo usermod -aG docker $USER || true
+  #           fi
+
+  #           # -------------------------------
+  #           # Install AWS CLI if missing
+  #           # -------------------------------
+  #           if ! command -v aws &> /dev/null; then
+  #             echo "AWS CLI not found -- installing..."
+
+  #             sudo apt-get update
+  #             sudo apt-get install -y unzip curl
+
+  #             curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
+  #               -o "awscliv2.zip"
+
+  #             unzip awscliv2.zip
+  #             sudo ./aws/install
+  #             rm -rf aws awscliv2.zip
+  #           fi
+
+  #           # -------------------------------
+  #           # Export AWS credentials for EC2 session
+  #           # -------------------------------
+  #           export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+  #           export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+  #           export AWS_DEFAULT_REGION="${{ env.AWS_REGION }}"
+
+  #           echo "AWS credentials configured on remote host."
+
+  #           # -------------------------------
+  #           # Prepare ECR info from TF outputs
+  #           # -------------------------------
+  #           ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+  #           ECR_REGISTRY="$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
+  #           REPO="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}"
+  #           TAG="${{ env.IMAGE_TAG }}"
+
+  #           echo "ECR: $REPO"
+  #           echo "Tag: $TAG"
+
+  #           # -------------------------------
+  #           # Docker login to ECR
+  #           # -------------------------------
+  #           aws ecr get-login-password \
+  #             --region $AWS_DEFAULT_REGION \
+  #             | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
+
+  #           # -------------------------------
+  #           # Stop and remove old container
+  #           # -------------------------------
+  #           if sudo docker ps -a --format '{{.Names}}' | grep -q "${{ env.DOCKER_IMAGE_NAME }}"; then
+  #             sudo docker stop "${{ env.DOCKER_IMAGE_NAME }}" || true
+  #             sudo docker rm "${{ env.DOCKER_IMAGE_NAME }}" || true
+  #           fi
+
+  #           # -------------------------------
+  #           # Pull & run new image
+  #           # -------------------------------
+  #           sudo docker pull "$REPO:$TAG"
+
+  #           sudo docker run -d \
+  #             --name "${{ env.DOCKER_IMAGE_NAME }}" \
+  #             -p 8000:8000 \
+  #             --restart unless-stopped \
+  #             "$REPO:$TAG"
+
+  #           echo "Deployment complete. Running containers:"
+  #           sudo docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+
+  
+  # -----------------------------
+  # 2) Terraform: destroy
+  # -----------------------------
+  terraform-destroy:
+    needs: changes
+    if: ${{ needs.changes.outputs.water-potability == 'true' || needs.changes.outputs.IOC == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: IOC
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init -reconfigure
+
+      - name: Select/Create Workspace
+        run: terraform workspace select $ENVIRONMENT || terraform workspace new $ENVIRONMENT
+
+      - name: Terraform Refresh
+        run: terraform refresh
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan for Destroy
+        run: terraform plan -destroy -out=tfplan_destroy
+
+      - name: Terraform Destroy
+        run: terraform apply -auto-approve tfplan_destroy
 
