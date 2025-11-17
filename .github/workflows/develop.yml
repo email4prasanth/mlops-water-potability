@@ -370,6 +370,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Delete all images in ECR repository
+        run: |
+          REPO_NAME="mlops-water-potability"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ env.AWS_REGION }}"
+          ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${REPO_NAME}"
+  
+          echo "Deleting all images from $ECR_URI ..."
+          aws ecr list-images --repository-name $REPO_NAME --query 'imageIds[*]' --output json | \
+            jq -c '.[]' | \
+            while read image; do
+              aws ecr batch-delete-image --repository-name $REPO_NAME --image-ids "$image"
+            done
+          echo "All images deleted from $ECR_URI."
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
 
