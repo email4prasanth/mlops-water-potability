@@ -323,12 +323,12 @@ jobs:
             # -------------------------------
             aws ecr get-login-password \
               --region $AWS_DEFAULT_REGION \
-              | docker login --username AWS --password-stdin $ECR_REGISTRY
+              | sudo docker login --username AWS --password-stdin $ECR_REGISTRY
 
             # -------------------------------
             # Stop and remove old container
             # -------------------------------
-            if docker ps -a --format '{{.Names}}' | grep -q "${{ env.DOCKER_IMAGE_NAME }}"; then
+            if sudo docker ps -a --format '{{.Names}}' | grep -q "${{ env.DOCKER_IMAGE_NAME }}"; then
               sudo docker stop "${{ env.DOCKER_IMAGE_NAME }}" || true
               sudo docker rm "${{ env.DOCKER_IMAGE_NAME }}" || true
             fi
@@ -345,7 +345,7 @@ jobs:
               "$REPO:$TAG"
 
             echo "Deployment complete. Running containers:"
-            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+            sudo docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
 
   
   # # -----------------------------
