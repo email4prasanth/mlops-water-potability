@@ -49,5 +49,3 @@ locals {
   server = lookup(local.ami, terraform.workspace)
 }
 
-
-
